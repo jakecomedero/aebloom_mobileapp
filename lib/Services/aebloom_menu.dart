@@ -3,10 +3,13 @@
 //     final aeBloomProducts = aeBloomProductsFromJson(jsonString);
 
 import 'dart:convert';
+import 'package:flutter/material.dart';
 
-AEBloomProducts aeBloomProductsFromJson(String str) => AEBloomProducts.fromJson(json.decode(str));
+AEBloomProducts aeBloomProductsFromJson(String str) =>
+    AEBloomProducts.fromJson(json.decode(str));
 
-String aeBloomProductsToJson(AEBloomProducts data) => json.encode(data.toJson());
+String aeBloomProductsToJson(AEBloomProducts data) =>
+    json.encode(data.toJson());
 
 class AEBloomProducts {
   AEBloomProducts({
@@ -16,7 +19,8 @@ class AEBloomProducts {
   final List<ProductDatum> data;
 
   factory AEBloomProducts.fromJson(Map<String, dynamic> json) => AEBloomProducts(
-        data: List<ProductDatum>.from(json["data"].map((x) => ProductDatum.fromJson(x))),
+        data: List<ProductDatum>.from(
+            json["data"].map((x) => ProductDatum.fromJson(x))),
       );
 
   Map<String, dynamic> toJson() => {
@@ -58,4 +62,32 @@ class ProductDatum {
         "price": price,
         "inStock": inStock,
       };
+}
+
+enum OrderStatus {
+  preparing('Preparing', Colors.amberAccent),
+  ready('Ready', Colors.lightGreenAccent),
+  delivered('Delivered', Colors.black12);
+
+  const OrderStatus(this.label, this.color);
+  final String label;
+  final Color color;
+}
+
+class FlowerOrder {
+  const FlowerOrder({
+    required this.productName,
+    required this.customerName,
+    required this.quantity,
+    required this.total,
+    required this.status,
+    required this.createdAt,
+  });
+
+  final String productName;
+  final String customerName;
+  final int quantity;
+  final double total;
+  final OrderStatus status;
+  final DateTime createdAt;
 }

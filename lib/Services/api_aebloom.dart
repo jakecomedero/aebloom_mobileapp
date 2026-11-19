@@ -2,12 +2,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:ae_bloom/model/aebloom_items.dart';
 
-/// Service API Controller handling HTTP GET requests and JSON Data Mapping
-/// for AEBloom Flower Products & Service Catalog.
+/// Service API Controller handling HTTP GET, POST, PUT, and DELETE operations.
 class AEBloomApi {
   AEBloomApi({http.Client? client}) : _client = client ?? http.Client();
 
-  // Primary GitHub Gist API endpoint for flower product catalog JSON data
   static final Uri endpoint = Uri.parse(
     'https://gist.githubusercontent.com/jakecomedero/'
     'ca5720d38d201abbd48b6bde6c915730/raw/'
@@ -16,7 +14,6 @@ class AEBloomApi {
 
   final http.Client _client;
 
-  /// Fallback JSON array containing product & service items
   static const String _fallbackProductsJson = '''
   {
     "data": [
@@ -64,14 +61,10 @@ class AEBloomApi {
   }
   ''';
 
-  /// Executes HTTP GET Request to retrieve the product catalog.
-  /// Converts raw JSON string response into AEBloomProducts objects.
+  // 1. HTTP GET Request
   Future<AEBloomProducts> getProducts() async {
     try {
-      // 1. Execute HTTP GET request
       final response = await _client.get(endpoint);
-
-      // 2. Validate HTTP response status code
       if (response.statusCode == 200) {
         return aeBloomProductsFromJson(response.body);
       } else {
@@ -79,6 +72,60 @@ class AEBloomApi {
       }
     } catch (e) {
       return aeBloomProductsFromJson(_fallbackProductsJson);
+    }
+  }
+
+  // 2. HTTP POST Request
+  Future<bool> createProduct(ProductDatum newProduct) async {
+    try {
+      final response = await _client.post(
+        endpoint,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'id': newProduct.id,
+          'productName': newProduct.productName,
+          'flowerType': newProduct.flowerType,
+          'productImage': newProduct.productImage,
+          'price': newProduct.price,
+          'inStock': newProduct.inStock,
+        }),
+      );
+      return response.statusCode == 200 || response.statusCode == 201;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 3. HTTP PUT Request
+  Future<bool> updateProduct(int id, ProductDatum updatedProduct) async {
+    try {
+      final updateUri = Uri.parse('${endpoint.toString()}/$id');
+      final response = await _client.put(
+        updateUri,
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'id': updatedProduct.id,
+          'productName': updatedProduct.productName,
+          'flowerType': updatedProduct.flowerType,
+          'productImage': updatedProduct.productImage,
+          'price': updatedProduct.price,
+          'inStock': updatedProduct.inStock,
+        }),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // 4. HTTP DELETE Request
+  Future<bool> deleteProduct(int id) async {
+    try {
+      final deleteUri = Uri.parse('${endpoint.toString()}/$id');
+      final response = await _client.delete(deleteUri);
+      return response.statusCode == 200 || response.statusCode == 204;
+    } catch (e) {
+      return false;
     }
   }
 }

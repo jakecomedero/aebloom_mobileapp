@@ -1,9 +1,10 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-
-import 'Services/API_Aebloom.dart';
-import 'login_page.dart';
+import 'package:ae_bloom/Services/firestore_service.dart';
 import 'package:ae_bloom/model/aebloom_items.dart';
+import 'login_page.dart';
+
+// --- Main HomePage Screen ---
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -16,88 +17,141 @@ class _HomePageState extends State<HomePage> {
   static const _pinkColor = Color(0xFFD4778B);
   static const _greenColor = Color(0xFF2E4036);
 
-  int _selectedBottomNavIndex = 0;
-  late Future<List<ProductDatum>> _productsFuture;
-  List<ProductDatum> _allProducts = [];
-  List<ProductDatum> _filteredProducts = [];
+  final FirestoreService _firestoreService = FirestoreService();
   final TextEditingController _searchController = TextEditingController();
 
-  final List<FlowerOrder> _orders = [
-    FlowerOrder(
-      productName: 'Red Rose Bouquet',
-      customerName: 'Sarah M.',
-      quantity: 12,
-      total: 1800,
-      status: OrderStatus.preparing,
-      createdAt: DateTime.now(),
-    ),
-    FlowerOrder(
-      productName: 'Sunflower Bright Box',
-      customerName: 'Mark T.',
-      quantity: 1,
-      total: 2400,
-      status: OrderStatus.ready,
-      createdAt: DateTime.now(),
-    ),
-    FlowerOrder(
-      productName: 'Pink Tulip Arrangement',
-      customerName: 'Anna K.',
-      quantity: 1,
-      total: 1950,
-      status: OrderStatus.delivered,
-      createdAt: DateTime.now(),
-    ),
-  ];
+  int _selectedBottomNavIndex = 0;
+  late Stream<List<ProductDatum>> _productsStream;
+  late Stream<List<FlowerOrder>> _ordersStream;
+  String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
-    _productsFuture = _loadProducts();
+    _productsStream = _firestoreService.getProductsStream();
+    _ordersStream = _firestoreService.getOrdersStream();
+    _seedFirestoreIfEmpty();
   }
 
-  Future<List<ProductDatum>> _loadProducts() async {
-    final products = (await AEBloomApi().getProducts()).data;
+  Future<void> _seedFirestoreIfEmpty() async {
+    try {
+      await _firestoreService.seedInitialData();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Firestore sync note: $e'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    }
+  }
+
+  void _refreshStreams() {
     setState(() {
-      _allProducts = products;
-      _filteredProducts = products;
+      _productsStream = _firestoreService.getProductsStream();
+      _ordersStream = _firestoreService.getOrdersStream();
     });
-    return products;
+    _seedFirestoreIfEmpty();
   }
 
-  void _retryLoadingProducts() {
-    setState(() => _productsFuture = _loadProducts());
+  List<ProductDatum> _applySearchFilter(List<ProductDatum> products) {
+    final query = _searchQuery.trim().toLowerCase();
+    if (query.isEmpty) return products;
+    return products.where((product) {
+      final nameMatch = product.productName.toLowerCase().contains(query);
+      final typeMatch = product.flowerType.toLowerCase().contains(query);
+      return nameMatch || typeMatch;
+    }).toList();
   }
 
-  void _filterProducts(String query) {
-    setState(() {
-      if (query.isEmpty) {
-        _filteredProducts = _allProducts;
-      } else {
-        _filteredProducts = _allProducts.where((product) {
-          final nameMatch =
-              product.productName.toLowerCase().contains(query.toLowerCase());
-          final typeMatch =
-              product.flowerType.toLowerCase().contains(query.toLowerCase());
-          return nameMatch || typeMatch;
-        }).toList();
-      }
-    });
+  Future<void> _addProductItem() async {
+    final newProduct = await showDialog<ProductDatum>(
+      context: context,
+      builder: (context) => const _ProductFormDialog(),
+    );
+
+    if (newProduct == null || !mounted) return;
+
+    try {
+      await _firestoreService.addProduct(
+        productName: newProduct.productName,
+        flowerType: newProduct.flowerType,
+        productImage: newProduct.productImage,
+        price: newProduct.price,
+        inStock: newProduct.inStock,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Added ${newProduct.productName} to Firestore')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to add product: $e')),
+      );
+    }
+  }
+
+  Future<void> _editProductItem(ProductDatum product) async {
+    final updatedProduct = await showDialog<ProductDatum>(
+      context: context,
+      builder: (context) => _ProductFormDialog(product: product),
+    );
+
+    if (updatedProduct == null || !mounted) return;
+
+    try {
+      await _firestoreService.saveProduct(updatedProduct);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Updated ${updatedProduct.productName}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update product: $e')),
+      );
+    }
+  }
+
+  Future<void> _deleteProductItem(ProductDatum product) async {
+    try {
+      await _firestoreService.deleteProduct(product);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Deleted ${product.productName}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete product: $e')),
+      );
+    }
   }
 
   Future<void> _openNewOrderForm([ProductDatum? initialProduct]) async {
     List<ProductDatum> products;
     try {
-      products = await _productsFuture;
-    } catch (_) {
+      products = await _firestoreService.getProductsOnce();
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Load products before creating an order.')),
+        SnackBar(content: Text('Could not load products from Firestore: $e')),
       );
       return;
     }
 
+    if (!mounted) return;
+
     final inStockProducts = products.where((product) => product.inStock).toList();
-    if (inStockProducts.isEmpty) return;
+    if (inStockProducts.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No in-stock products available to order.')),
+      );
+      return;
+    }
+
     final ProductDatum selectedProduct =
         initialProduct != null && initialProduct.inStock
             ? initialProduct
@@ -112,13 +166,59 @@ class _HomePageState extends State<HomePage> {
     );
 
     if (newOrder == null || !mounted) return;
-    setState(() {
-      _orders.insert(0, newOrder);
-      _selectedBottomNavIndex = 2;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Order for ${newOrder.productName} was created.')),
-    );
+
+    try {
+      await _firestoreService.createOrder(
+        productName: newOrder.productName,
+        customerName: newOrder.customerName,
+        quantity: newOrder.quantity,
+        total: newOrder.total,
+      );
+      if (!mounted) return;
+      setState(() => _selectedBottomNavIndex = 2);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Order for ${newOrder.productName} saved.')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save order: $e')),
+      );
+    }
+  }
+
+  Future<void> _updateOrderStatus(FlowerOrder order, OrderStatus status) async {
+    if (order.docId == null) return;
+    try {
+      await _firestoreService.updateOrderStatus(order.docId!, status);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${order.productName} marked as ${status.label}'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update order: $e')),
+      );
+    }
+  }
+
+  Future<void> _deleteOrder(FlowerOrder order) async {
+    if (order.docId == null) return;
+    try {
+      await _firestoreService.deleteOrder(order.docId!);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Deleted order for ${order.customerName}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete order: $e')),
+      );
+    }
   }
 
   Future<void> _signOut() async {
@@ -150,7 +250,7 @@ class _HomePageState extends State<HomePage> {
           IconButton(
             icon: const Icon(Icons.notifications_outlined),
             onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('No new store notifications')),
+              const SnackBar(content: Text('Connected to Cloud Firestore')),
             ),
           ),
         ],
@@ -172,6 +272,7 @@ class _HomePageState extends State<HomePage> {
             _drawerItem(Icons.dashboard_outlined, 'Dashboard', 0),
             _drawerItem(Icons.local_florist_outlined, 'Products & Flowers', 1),
             _drawerItem(Icons.receipt_long_outlined, 'Order Management', 2),
+            _drawerItem(Icons.analytics_outlined, 'Sales & Analytics', 3),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.logout, color: Colors.redAccent),
@@ -189,12 +290,16 @@ class _HomePageState extends State<HomePage> {
       },
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedBottomNavIndex,
-        onDestinationSelected: (index) => setState(() => _selectedBottomNavIndex = index),
+        onDestinationSelected: (index) =>
+            setState(() => _selectedBottomNavIndex = index),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.home_outlined), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.local_florist_outlined), label: 'Products'),
-          NavigationDestination(icon: Icon(Icons.receipt_long_outlined), label: 'Orders'),
-          NavigationDestination(icon: Icon(Icons.analytics_outlined), label: 'Sales'),
+          NavigationDestination(
+              icon: Icon(Icons.local_florist_outlined), label: 'Products'),
+          NavigationDestination(
+              icon: Icon(Icons.receipt_long_outlined), label: 'Orders'),
+          NavigationDestination(
+              icon: Icon(Icons.analytics_outlined), label: 'Sales'),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -220,25 +325,74 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildDashboardView() {
-    final pendingOrders = _orders.where((order) => order.status != OrderStatus.delivered).length;
-    final sales = _orders.fold<double>(0, (total, order) => total + order.total);
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('Store Metrics', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _greenColor)),
-        const SizedBox(height: 12),
-        Row(
+    return StreamBuilder<List<FlowerOrder>>(
+      stream: _ordersStream,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return _buildErrorState(
+            'Unable to load orders from Firestore.\n${snapshot.error}',
+          );
+        }
+
+        final orders = snapshot.data ?? const <FlowerOrder>[];
+        final pendingOrders = orders
+            .where((order) => order.status != OrderStatus.delivered)
+            .length;
+        final sales = orders.fold<double>(0, (total, order) => total + order.total);
+
+        return ListView(
+          padding: const EdgeInsets.all(16),
           children: [
-            Expanded(child: _metricCard(Icons.monetization_on, 'Sales Total', _peso(sales))),
-            const SizedBox(width: 12),
-            Expanded(child: _metricCard(Icons.shopping_basket, 'Active Orders', '$pendingOrders Pending')),
+            const Text(
+              'Store Metrics',
+              style: TextStyle(
+                  fontSize: 20, fontWeight: FontWeight.bold, color: _greenColor),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: _metricCard(
+                    Icons.monetization_on,
+                    'Sales Total',
+                    _peso(sales),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _metricCard(
+                    Icons.shopping_basket,
+                    'Active Orders',
+                    '$pendingOrders Pending',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Recent Flower Orders',
+              style: TextStyle(
+                  fontSize: 20, fontWeight: FontWeight.bold, color: _greenColor),
+            ),
+            const SizedBox(height: 12),
+            if (orders.isEmpty)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Center(
+                    child: Text('No orders in Firestore yet.'),
+                  ),
+                ),
+              )
+            else
+              ...orders.take(3).map(_orderCard),
           ],
-        ),
-        const SizedBox(height: 24),
-        const Text('Recent Flower Orders', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _greenColor)),
-        const SizedBox(height: 12),
-        ..._orders.take(3).map(_orderCard),
-      ],
+        );
+      },
     );
   }
 
@@ -247,98 +401,207 @@ class _HomePageState extends State<HomePage> {
       color: _pinkColor.withValues(alpha: 0.12),
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(children: [
-          Icon(icon, color: _pinkColor, size: 30),
-          const SizedBox(height: 6),
-          Text(label, style: const TextStyle(color: Colors.black54)),
-          Text(value, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-        ]),
+        child: Column(
+          children: [
+            Icon(icon, color: _pinkColor, size: 30),
+            const SizedBox(height: 6),
+            Text(label, style: const TextStyle(color: Colors.black54)),
+            Text(
+              value,
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  // Service Catalog View with Search Filtering & Product List Mapping
   Widget _buildProductsView() {
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.all(12.0),
-          child: TextField(
-            controller: _searchController,
-            onChanged: _filterProducts,
-            decoration: InputDecoration(
-              labelText: 'Search Flowers',
-              hintText: 'e.g. Rose, Sunflower, Tulip...',
-              prefixIcon: const Icon(Icons.search),
-              suffixIcon: _searchController.text.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.clear),
-                      onPressed: () {
-                        _searchController.clear();
-                        _filterProducts('');
-                      },
-                    )
-                  : null,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (value) => setState(() => _searchQuery = value),
+                  decoration: InputDecoration(
+                    labelText: 'Search Flowers',
+                    hintText: 'e.g. Rose, Sunflower, Tulip...',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                          )
+                        : null,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: _addProductItem,
+                style: FilledButton.styleFrom(
+                  backgroundColor: _pinkColor,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+                ),
+                icon: const Icon(Icons.add),
+                label: const Text('Add'),
+              ),
+            ],
           ),
         ),
         Expanded(
-          child: FutureBuilder<List<ProductDatum>>(
-            future: _productsFuture,
+          child: StreamBuilder<List<ProductDatum>>(
+            stream: _productsStream,
             builder: (context, snapshot) {
-              if (snapshot.connectionState != ConnectionState.done) {
+              if (snapshot.connectionState == ConnectionState.waiting &&
+                  !snapshot.hasData) {
                 return const Center(child: CircularProgressIndicator());
               }
               if (snapshot.hasError) {
+                return _buildErrorState(
+                  'Unable to load products from Firestore.\n${snapshot.error}',
+                );
+              }
+
+              final allProducts = snapshot.data ?? const <ProductDatum>[];
+              if (allProducts.isEmpty) {
                 return Center(
-                  child: ElevatedButton.icon(
-                    onPressed: _retryLoadingProducts,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Retry loading products'),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('No products in Firestore yet.'),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: _seedFirestoreIfEmpty,
+                        style:
+                            FilledButton.styleFrom(backgroundColor: _pinkColor),
+                        icon: const Icon(Icons.cloud_upload_outlined),
+                        label: const Text('Seed Sample Products'),
+                      ),
+                    ],
                   ),
                 );
               }
-              if (_filteredProducts.isEmpty) {
+
+              final filteredProducts = _applySearchFilter(allProducts);
+              if (filteredProducts.isEmpty) {
                 return const Center(
                   child: Text('No flower products matched your search.'),
                 );
               }
+
               return ListView.separated(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                itemCount: _filteredProducts.length,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                itemCount: filteredProducts.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 12),
                 itemBuilder: (context, index) {
-                  final product = _filteredProducts[index];
+                  final product = filteredProducts[index];
                   return Card(
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(12),
-                      leading: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Image.network(
-                          product.productImage,
-                          width: 64,
-                          height: 64,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const SizedBox(
-                            width: 64,
-                            child: Icon(Icons.local_florist, color: _pinkColor),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: product.productImage.isNotEmpty
+                                ? Image.network(
+                                    product.productImage,
+                                    width: 64,
+                                    height: 64,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) => const SizedBox(
+                                      width: 64,
+                                      height: 64,
+                                      child: Icon(
+                                        Icons.local_florist,
+                                        color: _pinkColor,
+                                      ),
+                                    ),
+                                  )
+                                : const SizedBox(
+                                    width: 64,
+                                    height: 64,
+                                    child: Icon(
+                                      Icons.local_florist,
+                                      color: _pinkColor,
+                                    ),
+                                  ),
                           ),
-                        ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  product.productName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  product.flowerType,
+                                  style: const TextStyle(color: Colors.black54),
+                                ),
+                                Text(
+                                  _peso(product.price),
+                                  style: const TextStyle(color: Colors.black54),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              product.inStock
+                                  ? FilledButton(
+                                      onPressed: () =>
+                                          _openNewOrderForm(product),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: _pinkColor,
+                                      ),
+                                      child: const Text('Order'),
+                                    )
+                                  : const Chip(label: Text('Out of stock')),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.edit_outlined,
+                                      color: Colors.blueAccent,
+                                    ),
+                                    onPressed: () => _editProductItem(product),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: Colors.redAccent,
+                                    ),
+                                    onPressed: () =>
+                                        _deleteProductItem(product),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
-                      title: Text(
-                        product.productName,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      subtitle: Text('${product.flowerType}\n${_peso(product.price)}'),
-                      trailing: product.inStock
-                          ? FilledButton(
-                              onPressed: () => _openNewOrderForm(product),
-                              child: const Text('Order'),
-                            )
-                          : const Chip(label: Text('Out of stock')),
                     ),
                   );
                 },
@@ -351,16 +614,32 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildOrdersView() {
-    if (_orders.isEmpty) {
-      return const Center(
-        child: Text('No orders yet. Create your first flower order.'),
-      );
-    }
-    return ListView.separated(
-      padding: const EdgeInsets.all(16),
-      itemCount: _orders.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 10),
-      itemBuilder: (_, index) => _orderCard(_orders[index]),
+    return StreamBuilder<List<FlowerOrder>>(
+      stream: _ordersStream,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return _buildErrorState(
+            'Unable to load orders from Firestore.\n${snapshot.error}',
+          );
+        }
+
+        final orders = snapshot.data ?? const <FlowerOrder>[];
+        if (orders.isEmpty) {
+          return const Center(
+            child: Text('No orders yet. Create your first flower order.'),
+          );
+        }
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemCount: orders.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 10),
+          itemBuilder: (_, index) => _orderCard(orders[index]),
+        );
+      },
     );
   }
 
@@ -372,45 +651,270 @@ class _HomePageState extends State<HomePage> {
           child: const Icon(Icons.local_florist, color: _pinkColor),
         ),
         title: Text('${order.productName} (${order.quantity} pcs)'),
-        subtitle: Text('Customer: ${order.customerName}\n${_peso(order.total)}'),
-        trailing: Chip(
-          label: Text(order.status.label),
-          backgroundColor: order.status.color,
+        subtitle:
+            Text('Customer: ${order.customerName}\n${_peso(order.total)}'),
+        trailing: PopupMenuButton<String>(
+          tooltip: 'Update order status',
+          onSelected: (action) {
+            if (action == 'delete') {
+              _deleteOrder(order);
+            } else {
+              _updateOrderStatus(order, OrderStatus.fromLabel(action));
+            }
+          },
+          itemBuilder: (context) => [
+            ...OrderStatus.values.map(
+              (status) => PopupMenuItem<String>(
+                value: status.label,
+                child: Text('Mark as ${status.label}'),
+              ),
+            ),
+            const PopupMenuDivider(),
+            const PopupMenuItem<String>(
+              value: 'delete',
+              child: Text(
+                'Delete Order',
+                style: TextStyle(color: Colors.redAccent),
+              ),
+            ),
+          ],
+          child: Chip(
+            label: Text(order.status.label),
+            backgroundColor: order.status.color,
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildAnalyticsView() => const Center(child: Text('Sales & Analytics View'));
+  Widget _buildAnalyticsView() {
+    return StreamBuilder<List<ProductDatum>>(
+      stream: _productsStream,
+      builder: (context, productSnapshot) {
+        return StreamBuilder<List<FlowerOrder>>(
+          stream: _ordersStream,
+          builder: (context, orderSnapshot) {
+            if ((productSnapshot.connectionState == ConnectionState.waiting &&
+                    !productSnapshot.hasData) ||
+                (orderSnapshot.connectionState == ConnectionState.waiting &&
+                    !orderSnapshot.hasData)) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            final products = productSnapshot.data ?? const <ProductDatum>[];
+            final orders = orderSnapshot.data ?? const <FlowerOrder>[];
+            final totalRevenue =
+                orders.fold<double>(0, (sum, o) => sum + o.total);
+            final deliveredCount = orders
+                .where((o) => o.status == OrderStatus.delivered)
+                .length;
+            final inStockCount = products.where((p) => p.inStock).length;
+
+            return ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text(
+                  'Sales & Inventory Summary',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: _greenColor,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _metricCard(
+                        Icons.payments_outlined,
+                        'Total Revenue',
+                        _peso(totalRevenue),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _metricCard(
+                        Icons.check_circle_outline,
+                        'Delivered Orders',
+                        '$deliveredCount / ${orders.length}',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _metricCard(
+                        Icons.local_florist_outlined,
+                        'Products Catalog',
+                        '${products.length} Items',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _metricCard(
+                        Icons.inventory_2_outlined,
+                        'In Stock',
+                        '$inStockCount Available',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.cloud_done, color: _pinkColor),
+                    title: const Text('Cloud Firestore Connected'),
+                    subtitle: Text(
+                      'Collections: ${FirestoreService.productsCollection}, '
+                      '${FirestoreService.ordersCollection}',
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildErrorState(String message) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(message, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              onPressed: _refreshStreams,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   String _peso(double amount) => '₱${amount.toStringAsFixed(2)}';
 }
 
-enum OrderStatus {
-  preparing('Preparing', Colors.amberAccent),
-  ready('Ready', Colors.lightGreenAccent),
-  delivered('Delivered', Colors.black12);
+// --- Dialog Forms ---
 
-  const OrderStatus(this.label, this.color);
-  final String label;
-  final Color color;
+class _ProductFormDialog extends StatefulWidget {
+  const _ProductFormDialog({this.product});
+  final ProductDatum? product;
+
+  @override
+  State<_ProductFormDialog> createState() => _ProductFormDialogState();
 }
 
-class FlowerOrder {
-  const FlowerOrder({
-    required this.productName,
-    required this.customerName,
-    required this.quantity,
-    required this.total,
-    required this.status,
-    required this.createdAt,
-  });
-  final String productName;
-  final String customerName;
-  final int quantity;
-  final double total;
-  final OrderStatus status;
-  final DateTime createdAt;
+class _ProductFormDialogState extends State<_ProductFormDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController;
+  late final TextEditingController _typeController;
+  late final TextEditingController _priceController;
+  late final TextEditingController _imageController;
+  late bool _inStock;
+
+  bool get _isEditing => widget.product != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController =
+        TextEditingController(text: widget.product?.productName ?? '');
+    _typeController =
+        TextEditingController(text: widget.product?.flowerType ?? '');
+    _priceController = TextEditingController(
+      text: widget.product != null ? widget.product!.price.toString() : '',
+    );
+    _imageController =
+        TextEditingController(text: widget.product?.productImage ?? '');
+    _inStock = widget.product?.inStock ?? true;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _typeController.dispose();
+    _priceController.dispose();
+    _imageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(_isEditing ? 'Edit Product' : 'Add Product'),
+      content: Form(
+        key: _formKey,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(labelText: 'Product Name'),
+                validator: (val) =>
+                    val == null || val.trim().isEmpty ? 'Enter name' : null,
+              ),
+              TextFormField(
+                controller: _typeController,
+                decoration: const InputDecoration(labelText: 'Flower Type'),
+                validator: (val) =>
+                    val == null || val.trim().isEmpty ? 'Enter type' : null,
+              ),
+              TextFormField(
+                controller: _priceController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Price'),
+                validator: (val) =>
+                    double.tryParse(val ?? '') == null ? 'Enter valid price' : null,
+              ),
+              TextFormField(
+                controller: _imageController,
+                decoration: const InputDecoration(
+                  labelText: 'Image URL (optional)',
+                ),
+              ),
+              SwitchListTile(
+                title: const Text('In Stock'),
+                value: _inStock,
+                onChanged: (val) => setState(() => _inStock = val),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            final result = ProductDatum(
+              docId: widget.product?.docId,
+              id: widget.product?.id ?? DateTime.now().millisecondsSinceEpoch,
+              productName: _nameController.text.trim(),
+              flowerType: _typeController.text.trim(),
+              productImage: _imageController.text.trim(),
+              price: double.parse(_priceController.text),
+              inStock: _inStock,
+            );
+            Navigator.pop(context, result);
+          },
+          child: Text(_isEditing ? 'Save Changes' : 'Add Product'),
+        ),
+      ],
+    );
+  }
 }
 
 class _NewOrderDialog extends StatefulWidget {
@@ -460,15 +964,18 @@ class _NewOrderDialogState extends State<_NewOrderDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               DropdownButtonFormField<ProductDatum>(
-                value: _selectedProduct,
+                initialValue: _selectedProduct,
                 decoration: const InputDecoration(labelText: 'Flower product'),
                 items: widget.products
-                    .map((product) => DropdownMenuItem(
-                          value: product,
-                          child: Text(product.productName),
-                        ))
+                    .map(
+                      (product) => DropdownMenuItem(
+                        value: product,
+                        child: Text(product.productName),
+                      ),
+                    )
                     .toList(),
-                onChanged: (product) => setState(() => _selectedProduct = product!),
+                onChanged: (product) =>
+                    setState(() => _selectedProduct = product!),
               ),
               TextFormField(
                 controller: _customerController,
